@@ -6,7 +6,7 @@
 # Date  : 2026-05-29
 ################################################################
 
-import os, time, random, tyro
+import os, time, random, tyro, gc
 from collections import defaultdict
 from typing import Optional
 from dataclasses import dataclass
@@ -21,13 +21,16 @@ from utils.data import DictArray
 from utils.model import Agent
 from utils.logger import Logger
 
-from task import assist_pick_single_ycb, raw_pick_single_ycb
+from task import my_pick_single_ycb, my_pick_cube
 # ManiSkill specific imports
 import mani_skill.envs
 from mani_skill.utils import gym_utils
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper, FlattenRGBDObservationWrapper
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
+
+RUN_NAME = None
+RUN_NAME = "MyPickSingleYCB-v1__train__1__1780144576"
 
 
 @dataclass
@@ -58,9 +61,11 @@ class Args:
     """the environment rendering mode"""
 
     # Algorithm specific arguments
-    # env_id: str = "AssistPickSingleYCB-v1"
-    env_id: str = "RawPickSingleYCB-v1"
+    env_id: str = "MyPickSingleYCB-v1"
+    # env_id: str = "MyPickCube-v1"
     """the id of the environment"""
+    robot_uid: str = "panda"
+    """the robot uid to use for the environment"""
     include_state: bool = True
     """whether to include state information in observations"""
     total_timesteps: int = 10_000_000
@@ -77,7 +82,7 @@ class Args:
     """whether to let parallel evaluation environments reset upon termination instead of truncation"""
     num_steps: int = 100
     """the number of steps to run in each environment per policy rollout"""
-    num_eval_steps: int = 50
+    num_eval_steps: int = 100
     """the number of steps to run in each evaluation environment during evaluation"""
     reconfiguration_freq: Optional[int] = None
     """how often to reconfigure the environment during training"""
@@ -91,7 +96,7 @@ class Args:
     """the discount factor gamma"""
     gae_lambda: float = 0.9
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 32
+    num_minibatches: int = 8
     """the number of mini-batches"""
     update_epochs: int = 8
     """the K epochs to update the policy"""
@@ -128,27 +133,45 @@ class Args:
     """the name of the run"""
 
 
-if __name__ == "__main__":
+def get_args():
     #### parse arguments ####
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    args.run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    if RUN_NAME is None or RUN_NAME == "":
+        args.run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    else:
+        print(f"Using existing experiment {RUN_NAME}")
+        ckpt_num = -1
+        for file in os.listdir(f"runs/{RUN_NAME}"):
+            if file == "final_ckpt.pt":
+                args.checkpoint = f"runs/{RUN_NAME}/{file}"
+                break
+            elif file.endswith(".pt") and file.startswith("ckpt_"):
+                curr_num = int(file.split("_")[1].split(".")[0])
+                if curr_num > ckpt_num:
+                    ckpt_num = curr_num
+                    args.checkpoint = f"runs/{RUN_NAME}/{file}"
+        print(f"Using checkpoint {args.checkpoint}")
+        args.run_name = RUN_NAME
+    return args
 
-    #### seeding ####
+
+def param_init(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
-
-    device = torch.device(
+    return torch.device(
         "cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    # env setup
+
+def env_setup(args):
     env_kwargs = dict(obs_mode="rgb",
                       render_mode=args.render_mode,
-                      sim_backend="physx_cuda")
+                      sim_backend="physx_cuda",
+                      robot_uids=args.robot_uid)
     if args.control_mode is not None:
         env_kwargs["control_mode"] = args.control_mode
     eval_envs = gym.make(args.env_id,
@@ -204,6 +227,14 @@ if __name__ == "__main__":
     assert isinstance(
         envs.single_action_space,
         gym.spaces.Box), "only continuous action space is supported"
+
+    return envs, eval_envs, env_kwargs
+
+
+if __name__ == "__main__":
+    args = get_args()
+    device = param_init(args)
+    envs, eval_envs, env_kwargs = env_setup(args)
 
     max_episode_steps = gym_utils.find_max_episode_steps_value(envs._env)
     logger = Logger(
@@ -486,5 +517,7 @@ if __name__ == "__main__":
         torch.save(agent.state_dict(), model_path)
         print(f"model saved to {model_path}")
 
-    envs.close()
+    if envs is not None: envs.close()
+    if eval_envs is not None: eval_envs.close()
     if logger is not None: logger.close()
+    gc.collect()

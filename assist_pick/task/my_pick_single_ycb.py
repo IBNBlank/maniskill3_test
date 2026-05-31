@@ -13,7 +13,6 @@ import sapien
 import torch
 
 from mani_skill import ASSET_DIR
-from mani_skill.agents.robots.fetch.fetch import Fetch
 from mani_skill.agents.robots.panda.panda import Panda
 from mani_skill.agents.robots.panda.panda_wristcam import PandaWristCam
 from mani_skill.envs.sapien_env import BaseEnv
@@ -31,10 +30,10 @@ from mani_skill.utils.structs.types import GPUMemoryConfig, SimConfig
 WARNED_ONCE = False
 
 
-@register_env("RawPickSingleYCB-v1",
-              max_episode_steps=50,
+@register_env("MyPickSingleYCB-v1",
+              max_episode_steps=100,
               asset_download_ids=["ycb"])
-class PickSingleYCBEnv(BaseEnv):
+class MyPickSingleYCBEnv(BaseEnv):
     """
     **Task Description:**
     Pick up a random object sampled from the [YCB dataset](https://www.ycbbenchmarks.com/) and move it to a random goal position
@@ -57,14 +56,14 @@ class PickSingleYCBEnv(BaseEnv):
 
     _sample_video_link = "https://github.com/haosulab/ManiSkill/raw/main/figures/environment_demos/PickSingleYCB-v1_rt.mp4"
 
-    SUPPORTED_ROBOTS = ["panda", "panda_wristcam", "fetch"]
-    agent: Union[Panda, PandaWristCam, Fetch]
+    SUPPORTED_ROBOTS = ["panda", "panda_wristcam"]
+    agent: Union[Panda, PandaWristCam]
     goal_thresh = 0.025
 
     def __init__(
         self,
         *args,
-        robot_uids="panda_wristcam",
+        robot_uids="panda",
         robot_init_qpos_noise=0.02,
         num_envs=1,
         reconfiguration_freq=None,
@@ -177,9 +176,8 @@ class PickSingleYCBEnv(BaseEnv):
             qs = random_quaternions(b, lock_x=True, lock_y=True)
             self.obj.set_pose(Pose.create_from_pq(p=xyz, q=qs))
 
-            goal_xyz = torch.zeros((b, 3))
-            goal_xyz[:, :2] = torch.rand((b, 2)) * 0.2 - 0.1
-            goal_xyz[:, 2] = torch.rand((b)) * 0.3 + xyz[:, 2]
+            goal_xyz = xyz.clone()
+            goal_xyz[:, 2] += 0.2
             self.goal_site.set_pose(Pose.create_from_pq(goal_xyz))
 
             # Initialize robot arm to a higher position above the table than the default typically used for other table top tasks
